@@ -350,7 +350,7 @@ class BuildThread(threading.Thread):
 class QtBuilderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Qt项目构建工具 v3.0")
+        self.title("Qt项目构建工具 v1.0")
         self.geometry("900x600")
         self._setup_ui()
         self.event_queue = Queue()
