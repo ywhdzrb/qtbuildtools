@@ -12,10 +12,14 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from queue import Queue
+import re
 
 class QtProjectBuilder:
     def __init__(self, config):
         self.config = config
+        self.qt_path = self.config['qt_path']
+        self.qt_version = self._detect_qt_version()  # 新增版本检测
+        self.qt_modules = self._detect_qt_modules()
         self._validate_paths()
         
     def _validate_paths(self):
@@ -23,6 +27,150 @@ class QtProjectBuilder:
         for d in required_dirs:
             if not os.path.exists(f"{self.config['qt_path']}/{d}"):
                 raise FileNotFoundError(f"无效的Qt路径: {self.config['qt_path']}")
+    
+    def _detect_qt_modules(self):
+        project_path = self.config.get('project_path', '.')
+        module_patterns = {
+            'Core': [
+                r'\bQObject\b', r'\bQString\b', r'\bQCoreApplication\b',
+                r'q[a-z]+\.h', r'\bQFile\b', r'\bQDir\b',
+                # Qt5兼容
+                *([r'\bQTextCodec\b', r'\bQTextCodec::'] if self.qt_version < 6 else [])
+            ],
+            'Gui': [
+                r'\bQGuiApplication\b', r'\bQPaintEvent\b', r'\bQPalette\b',
+                r'\bQPainter\b', r'\bQFontMetrics\b', r'\bQIcon\b',
+                r'\bQImage\b', r'\bQColor\b', r'\bQBrush\b'
+            ],
+            'Widgets': [
+                r'\bQWidget\b', r'\bQMainWindow\b', r'\bQPushButton\b',
+                r'\bQTreeView\b', r'\bQTabWidget\b', r'\bQMenu\b',
+                r'\bQDialog\b', r'\bQLabel\b', r'\bQLineEdit\b'
+            ],
+            'Network': [
+                r'\bQTcpSocket\b', r'\bQNetworkAccessManager\b',
+                r'\bQLocalServer\b', r'\bQLocalSocket\b',
+                r'\bQNetworkReply\b', r'\bQHostAddress\b',
+                r'\bQNetworkRequest\b', r'\bQNetworkProxy\b'
+            ],
+            'Sql': [
+                r'\bQSqlDatabase\b', r'\bQSqlQuery\b',
+                r'\bQSqlTableModel\b', r'\bQSqlError\b',
+                r'\bQSqlRecord\b', r'\bQSqlField\b'
+            ],
+            'Multimedia': [
+                r'\bQMediaPlayer\b', r'\bQVideoWidget\b',
+                r'\bQAudioOutput\b', r'\bQCamera\b',
+                r'\bQAudioInput\b', r'\bQMediaMetaData\b'
+            ],
+            'WebEngineWidgets': [
+                r'\bQWebEngineView\b', r'\bQWebEnginePage\b',
+                r'<QtWebEngineWidgets>', r'\bQWebEngineProfile\b',
+                r'\bQWebEngineSettings\b', r'\bQWebEngineScript\b'
+            ],
+            'Charts': [
+                r'\bQChart\b', r'\bQChartView\b', r'\bQLineSeries\b',
+                r'\bQValueAxis\b', r'\bQBarSeries\b', r'\bQPieSeries\b'
+            ],
+            'OpenGL': [
+                r'\bQOpenGLWidget\b', r'\bQOpenGLFunctions\b',
+                r'\bQOpenGLShaderProgram\b', r'\bQOpenGLBuffer\b',
+                r'\bQOpenGLTexture\b'
+            ],
+            'Quick': [
+                r'\bQQuickView\b', r'\bQQmlEngine\b', r'\bQQmlComponent\b',
+                r'\bQQuickItem\b', r'\bQQuickWindow\b', r'\bQQmlContext\b'
+            ],
+            'Xml': [
+                r'\bQDomDocument\b', r'\bQXmlStreamReader\b',
+                r'\bQXmlSchemaValidator\b', r'\bQDomElement\b',
+                r'\bQXmlStreamWriter\b'
+            ],
+            'Bluetooth': [
+                r'\bQBluetoothDeviceDiscoveryAgent\b',
+                r'\bQLowEnergyController\b', r'\bQBluetoothAddress\b',
+                r'\bQBluetoothServiceDiscoveryAgent\b'
+            ],
+            'WebChannel': [
+                r'\bQWebChannel\b', r'\bQWebChannelAbstractTransport\b',
+                r'\bQWebChannelSlave\b', r'\bQWebChannelClient\b'
+            ],
+            'PrintSupport': [
+                r'\bQPrinter\b', r'\bQPrintDialog\b', r'\bQPageSetupDialog\b',
+                r'\bQPrintPreviewDialog\b', r'\bQPrintEngine\b', r'\bQPrinterInfo\b'
+            ]
+        }
+        
+        dependencies = {
+            'Gui': ['Core'],
+            'Widgets': ['Core', 'Gui'],
+            'Multimedia': ['Core', 'Gui', 'Network'],
+            'WebEngineWidgets': ['Core', 'Gui', 'Widgets', 'WebEngineCore', 'WebChannel'],
+            'WebEngineCore': ['Core', 'Gui', 'Network'],
+            'Charts': ['Core', 'Gui', 'Widgets'],
+            'OpenGL': ['Core', 'Gui'],
+            'Quick': ['Core', 'Gui', 'Qml'],
+            'Qml': ['Core', 'Network'],
+            'WebChannel': ['Core', 'Network'],
+            'Bluetooth': ['Core', 'Network'],
+            'Xml': ['Core'],
+            'Sql': ['Core'],
+            'MultimediaWidgets': ['Core', 'Gui', 'Widgets', 'Multimedia'],
+            'PrintSupport': ['Core', 'Gui', 'Widgets']
+        }
+
+        detected = set()
+        for root, _, files in os.walk(project_path):
+            for file in files:
+                if file.endswith(('.h', '.cpp', '.hpp')):
+                    try:
+                        with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            for module, patterns in module_patterns.items():
+                                if any(re.search(p, content) for p in patterns):
+                                    detected.update(self._resolve_dependencies(module, dependencies))
+                    except UnicodeDecodeError:
+                        continue
+
+        final_modules = list(detected.union(set(self.config.get('qt_modules', []))))
+        return final_modules or ['Core', 'Gui', 'Widgets']
+
+    def _detect_qt_version(self):
+        # 优先使用用户配置的版本
+        if 'qt_version' in self.config:
+            return int(self.config['qt_version'])
+        
+        # 从路径中自动解析版本号（支持Qt5/Qt6路径格式）
+        version_pattern = r"(?:Qt|QtRoot)(\d+)(?:\.(\d+))?\.?(\d+)?"
+        path_parts = self.qt_path.replace('\\', '/').split('/')
+        
+        # 在路径分段中查找版本号
+        for part in path_parts:
+            match = re.match(version_pattern, part)
+            if match:
+                major = int(match.group(1))
+                return major
+        
+        # 最后尝试从Qt路径的父目录检测
+        parent_dir = os.path.basename(os.path.dirname(self.qt_path))
+        match = re.match(r"(\d+\.\d+\.\d+)", parent_dir)
+        if match:
+            return int(match.group(1).split('.')[0])
+        
+        # 默认返回Qt6
+        return 6
+
+    # 新增依赖解析方法
+    def _resolve_dependencies(self, module, dep_map, resolved=None):
+        resolved = resolved or set()
+        if module not in dep_map:
+            return resolved
+        for dep in dep_map[module]:
+            if dep not in resolved:
+                self._resolve_dependencies(dep, dep_map, resolved)
+                resolved.add(dep)
+        resolved.add(module)
+        return resolved
     
     def build(self):
         start_time = datetime.now()
@@ -80,14 +228,24 @@ class QtProjectBuilder:
     
     def _compile_sources(self, moc_files):
         project_path = self.config.get('project_path', '.')
+
+        # 新增自动检测源码目录
+        source_dirs = set()
+        exclude_dirs = {'moc_temp', 'build', 'obj', 'dist', 'venv'}
+        for root, dirs, files in os.walk(project_path):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]  # 过滤排除目录
+            if any(f.endswith(('.h', '.hpp', '.cpp')) for f in files):
+                source_dirs.add(root)
+
         compile_cmd = [
-            'g++', '-c', '-pipe',
-            f'-std={self.config.get("cxx_std", "c++17")}',
-            '-Wall', '-Wextra',
-            f'-I{self.config["qt_path"]}/include',
-            f'-I{project_path}/include',
-            *[f'-I{self.config["qt_path"]}/include/Qt{module}' 
-            for module in self.config.get('qt_modules', ['Core', 'Gui', 'Widgets'])]
+        'g++', '-c', '-pipe',
+        f'-std={self.config.get("cxx_std", "c++17")}',
+        '-Wall', '-Wextra',
+        f'-I{self.config["qt_path"]}/include',
+        # 自动添加检测到的源码目录
+        *[f'-I{d}' for d in source_dirs],
+        *[f'-I{self.config["qt_path"]}/include/Qt{module}' 
+        for module in self.qt_modules]
         ]
 
         # 查找源文件（保持原有逻辑）
@@ -189,7 +347,7 @@ class QtProjectBuilder:
             *objects,
             '-lz', '-lopengl32', '-lGLU32', '-lgdi32', '-luser32',
             *[f'-lQt{self.config.get("qt_version", 6)}{module}' 
-              for module in self.config.get('qt_modules', ['Core', 'Gui', 'Widgets'])],
+              for module in self.qt_modules],  # 使用检测后的模块列表
             '-lmingw32', '-ldwmapi'
         ]
         print(f"[LD][命令] {' '.join(link_cmd)}")
