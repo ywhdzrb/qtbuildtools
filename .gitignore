@@ -4,3 +4,5 @@ obj/
 build/
 dist/
 *spec
+test.*
+__pycache__/
